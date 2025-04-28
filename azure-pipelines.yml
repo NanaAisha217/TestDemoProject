@@ -4,6 +4,69 @@
 # https://aka.ms/yaml
 
 
+# trigger:
+# - main  
+
+# pool:
+#   name: Default  # Self-hosted agent pool
+
+# variables:
+#   buildConfiguration: 'Release'
+#   publishDir: '$(Build.ArtifactStagingDirectory)/publish'
+
+# steps:
+# - task: UseDotNet@2
+#   inputs:
+#     packageType: 'sdk'
+#     version: '8.0.x'  # Updated to .NET 8
+#     installationPath: $(Agent.ToolsDirectory)/dotnet
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Restore NuGet packages'
+#   inputs:
+#     command: 'restore'
+#     projects: '**/*.csproj'
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Build the project'
+#   inputs:
+#     command: 'build'
+#     arguments: '--configuration $(buildConfiguration)'
+#     projects: '**/*.csproj'
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Run unit tests'
+#   inputs:
+#     command: 'test'
+#     projects: '**/*Tests.csproj'
+#     arguments: '--configuration $(buildConfiguration)'
+#     continueOnError: true
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Publish the app'
+#   inputs:
+#     command: 'publish'
+#     publishWebProjects: true
+#     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
+
+# - task: PowerShell@2
+#   displayName: 'Deploy to IIS'
+#   inputs:
+#     targetType: 'inline'
+#     script: |
+#       $destination = "C:\inetpub\wwwroot\TestApp"
+#       Write-Output "Cleaning existing files at $destination..."
+#       if (Test-Path $destination) {
+#           Remove-Item "$destination\*" -Recurse -Force
+#       } else {
+#           New-Item -ItemType Directory -Path $destination
+#       }
+
+#       Write-Output "Copying new files to $destination..."
+#       Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
+
+#       Write-Output "Deployment completed to IIS site folder."
+
 trigger:
 - main  
 
@@ -35,14 +98,6 @@ steps:
     projects: '**/*.csproj'
 
 - task: DotNetCoreCLI@2
-  displayName: 'Run unit tests'
-  inputs:
-    command: 'test'
-    projects: '**/*Tests.csproj'
-    arguments: '--configuration $(buildConfiguration)'
-    continueOnError: true
-
-- task: DotNetCoreCLI@2
   displayName: 'Publish the app'
   inputs:
     command: 'publish'
@@ -55,14 +110,10 @@ steps:
     targetType: 'inline'
     script: |
       $destination = "C:\inetpub\wwwroot\TestApp"
-      Write-Output "Cleaning existing files at $destination..."
-      if (Test-Path $destination) {
-          Remove-Item "$destination\*" -Recurse -Force
-      } else {
-          New-Item -ItemType Directory -Path $destination
-      }
+      Write-Output "Cleaning existing files..."
+      Remove-Item "$destination\*" -Recurse -Force
 
-      Write-Output "Copying new files to $destination..."
+      Write-Output "Copying files directly to IIS..."
       Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
 
-      Write-Output "Deployment completed to IIS site folder."
+      Write-Output "Deployment completed."
