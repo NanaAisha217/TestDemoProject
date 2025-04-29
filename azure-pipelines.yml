@@ -67,6 +67,57 @@
 
 #       Write-Output "Deployment completed to IIS site folder."
 
+# trigger:
+# - main  
+
+# pool:
+#   name: Default  # Self-hosted agent pool
+
+# variables:
+#   buildConfiguration: 'Release'
+#   publishDir: '$(Build.ArtifactStagingDirectory)/publish'
+
+# steps:
+# - task: UseDotNet@2
+#   inputs:
+#     packageType: 'sdk'
+#     version: '8.0.x'  # Updated to .NET 8
+#     installationPath: $(Agent.ToolsDirectory)/dotnet
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Restore NuGet packages'
+#   inputs:
+#     command: 'restore'
+#     projects: '**/*.csproj'
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Build the project'
+#   inputs:
+#     command: 'build'
+#     arguments: '--configuration $(buildConfiguration)'
+#     projects: '**/*.csproj'
+
+# - task: DotNetCoreCLI@2
+#   displayName: 'Publish the app'
+#   inputs:
+#     command: 'publish'
+#     publishWebProjects: true
+#     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
+
+# - task: PowerShell@2
+#   displayName: 'Deploy to IIS'
+#   inputs:
+#     targetType: 'inline'
+#     script: |
+#       $destination = "C:\inetpub\wwwroot\TestApp"
+#       Write-Output "Cleaning existing files..."
+#       Remove-Item "$destination\*" -Recurse -Force
+
+#       Write-Output "Copying files directly to IIS..."
+#       Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
+
+#       Write-Output "Deployment completed."
+
 trigger:
 - main  
 
@@ -76,12 +127,15 @@ pool:
 variables:
   buildConfiguration: 'Release'
   publishDir: '$(Build.ArtifactStagingDirectory)/publish'
+  siteName: 'AutoAppDemo'
+  physicalPath: 'C:\inetpub\wwwroot\AutoAppDemo'
+  appPoolName: 'AutoAppDemo-pool'
 
 steps:
 - task: UseDotNet@2
   inputs:
     packageType: 'sdk'
-    version: '8.0.x'  # Updated to .NET 8
+    version: '8.0.x'
     installationPath: $(Agent.ToolsDirectory)/dotnet
 
 - task: DotNetCoreCLI@2
@@ -105,15 +159,51 @@ steps:
     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
 
 - task: PowerShell@2
-  displayName: 'Deploy to IIS'
+  displayName: 'Create IIS Website & App Pool'
   inputs:
     targetType: 'inline'
     script: |
-      $destination = "C:\inetpub\wwwroot\TestApp"
-      Write-Output "Cleaning existing files..."
-      Remove-Item "$destination\*" -Recurse -Force
+      $siteName = "$(siteName)"
+      $physicalPath = "$(physicalPath)"
+      $appPoolName = "$(appPoolName)"
+      $port = 80
 
-      Write-Output "Copying files directly to IIS..."
+      Import-Module WebAdministration
+
+      Write-Host "Creating physical directory if it doesn't exist..."
+      if (!(Test-Path $physicalPath)) {
+          New-Item -Path $physicalPath -ItemType Directory | Out-Null
+          Write-Host "Created $physicalPath"
+      } else {
+          Write-Host "Directory already exists: $physicalPath"
+      }
+
+      Write-Host "Creating Application Pool..."
+      if (!(Get-WebAppPoolState -Name $appPoolName -ErrorAction SilentlyContinue)) {
+          New-WebAppPool -Name $appPoolName
+          Write-Host "Created App Pool: $appPoolName"
+      } else {
+          Write-Host "App Pool already exists: $appPoolName"
+      }
+
+      Write-Host "Creating IIS Website..."
+      if (!(Get-Website -Name $siteName -ErrorAction SilentlyContinue)) {
+          New-Website -Name $siteName -Port $port -PhysicalPath $physicalPath -ApplicationPool $appPoolName
+          Write-Host "Created IIS Site: $siteName on port $port"
+      } else {
+          Write-Host "Website already exists: $siteName"
+      }
+
+- task: PowerShell@2
+  displayName: 'Deploy to IIS Website'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $destination = "$(physicalPath)"
+      Write-Host "Cleaning existing files in $destination..."
+      Remove-Item "$destination\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+      Write-Host "Copying published files to $destination..."
       Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
 
-      Write-Output "Deployment completed."
+      Write-Host "Deployment completed."
