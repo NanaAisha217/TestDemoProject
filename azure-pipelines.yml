@@ -383,7 +383,7 @@ variables:
   siteName: 'AutoAppDemo'
   physicalPath: 'C:\inetpub\wwwroot\AutoAppDemo'
   appPoolName: 'AutoAppDemo-pool'
-  parentSiteName: 'Optimus App'
+  parentSiteName: 'Optimus Apps'
   appPortHttp: 8026
   appPortHttps: 8025
 
