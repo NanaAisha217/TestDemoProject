@@ -158,52 +158,94 @@ steps:
     publishWebProjects: true
     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
 
+# - task: PowerShell@2
+#   displayName: 'Create IIS Website & App Pool'
+#   inputs:
+#     targetType: 'inline'
+#     script: |
+#       $siteName = "$(siteName)"
+#       $physicalPath = "$(physicalPath)"
+#       $appPoolName = "$(appPoolName)"
+#       $port = 80
+
+#       Import-Module WebAdministration
+
+#       Write-Host "Creating physical directory if it doesn't exist..."
+#       if (!(Test-Path $physicalPath)) {
+#           New-Item -Path $physicalPath -ItemType Directory | Out-Null
+#           Write-Host "Created $physicalPath"
+#       } else {
+#           Write-Host "Directory already exists: $physicalPath"
+#       }
+
+#       Write-Host "Creating Application Pool..."
+#       if (!(Get-WebAppPoolState -Name $appPoolName -ErrorAction SilentlyContinue)) {
+#           New-WebAppPool -Name $appPoolName
+#           Write-Host "Created App Pool: $appPoolName"
+#       } else {
+#           Write-Host "App Pool already exists: $appPoolName"
+#       }
+
+#       Write-Host "Creating IIS Website..."
+#       if (!(Get-Website -Name $siteName -ErrorAction SilentlyContinue)) {
+#           New-Website -Name $siteName -Port $port -PhysicalPath $physicalPath -ApplicationPool $appPoolName
+#           Write-Host "Created IIS Site: $siteName on port $port"
+#       } else {
+#           Write-Host "Website already exists: $siteName"
+#       }
+
+# - task: PowerShell@2
+#   displayName: 'Deploy to IIS Website'
+#   inputs:
+#     targetType: 'inline'
+#     script: |
+#       $destination = "$(physicalPath)"
+#       Write-Host "Cleaning existing files in $destination..."
+#       Remove-Item "$destination\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+#       Write-Host "Copying published files to $destination..."
+#       Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
+
+#       Write-Host "Deployment completed."
 - task: PowerShell@2
-  displayName: 'Create IIS Website & App Pool'
+  displayName: 'Create IIS Website & App Pool (AutoAppDemo)'
   inputs:
     targetType: 'inline'
     script: |
-      $siteName = "$(siteName)"
-      $physicalPath = "$(physicalPath)"
-      $appPoolName = "$(appPoolName)"
+      $siteName = "AutoAppDemo"
+      $appPoolName = "$siteName-pool"
+      $physicalPath = "C:\inetpub\wwwroot\$siteName"
       $port = 80
 
+      Write-Host "Importing WebAdministration Module..."
       Import-Module WebAdministration
 
-      Write-Host "Creating physical directory if it doesn't exist..."
-      if (!(Test-Path $physicalPath)) {
-          New-Item -Path $physicalPath -ItemType Directory | Out-Null
-          Write-Host "Created $physicalPath"
-      } else {
-          Write-Host "Directory already exists: $physicalPath"
+      try {
+          Write-Host "Checking or creating site folder..."
+          if (-Not (Test-Path $physicalPath)) {
+              New-Item -Path $physicalPath -ItemType Directory -Force
+              Write-Host "Folder created: $physicalPath"
+          } else {
+              Write-Host "Folder already exists: $physicalPath"
+          }
+
+          Write-Host "Checking or creating app pool..."
+          if (-Not (Test-Path "IIS:\AppPools\$appPoolName")) {
+              New-WebAppPool -Name $appPoolName
+              Write-Host "App pool created: $appPoolName"
+          } else {
+              Write-Host "App pool already exists: $appPoolName"
+          }
+
+          Write-Host "Checking or creating IIS site..."
+          if (-Not (Test-Path "IIS:\Sites\$siteName")) {
+              New-Website -Name $siteName -Port $port -PhysicalPath $physicalPath -ApplicationPool $appPoolName
+              Write-Host "IIS website created: $siteName (Port $port)"
+          } else {
+              Write-Host "IIS website already exists: $siteName"
+          }
+
+      } catch {
+          Write-Error "Deployment failed with error: $_"
+          exit 1
       }
-
-      Write-Host "Creating Application Pool..."
-      if (!(Get-WebAppPoolState -Name $appPoolName -ErrorAction SilentlyContinue)) {
-          New-WebAppPool -Name $appPoolName
-          Write-Host "Created App Pool: $appPoolName"
-      } else {
-          Write-Host "App Pool already exists: $appPoolName"
-      }
-
-      Write-Host "Creating IIS Website..."
-      if (!(Get-Website -Name $siteName -ErrorAction SilentlyContinue)) {
-          New-Website -Name $siteName -Port $port -PhysicalPath $physicalPath -ApplicationPool $appPoolName
-          Write-Host "Created IIS Site: $siteName on port $port"
-      } else {
-          Write-Host "Website already exists: $siteName"
-      }
-
-- task: PowerShell@2
-  displayName: 'Deploy to IIS Website'
-  inputs:
-    targetType: 'inline'
-    script: |
-      $destination = "$(physicalPath)"
-      Write-Host "Cleaning existing files in $destination..."
-      Remove-Item "$destination\*" -Recurse -Force -ErrorAction SilentlyContinue
-
-      Write-Host "Copying published files to $destination..."
-      Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
-
-      Write-Host "Deployment completed."
