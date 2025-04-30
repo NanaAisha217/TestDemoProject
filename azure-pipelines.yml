@@ -134,7 +134,7 @@ steps:
               throw "Extraction completed but no files were found in destination directory"
           }
           
-          Write-Host "Successfully extracted $($extractedFiles.Count) items to $physicalPath"
+          Write-Host "✅ Successfully extracted $($extractedFiles.Count) items to $physicalPath"
       } catch {
           Write-Host "##vso[task.logissue type=error]Failed to extract zip file: $_"
           Write-Host "Attempting alternative extraction method..."
@@ -145,7 +145,7 @@ steps:
               $zip = $shell.NameSpace($zipPath)
               $destination = $shell.NameSpace((Get-Item $physicalPath).Parent.FullName)
               $destination.CopyHere($zip.Items(), 16) # 16 = Respond with "Yes to All" on any dialog
-              Write-Host "Successfully extracted files using Shell.Application method"
+              Write-Host "✅ Successfully extracted files using Shell.Application method"
           } catch {
               Write-Host "##vso[task.logissue type=error]Both extraction methods failed. Error: $_" 
               throw "Failed to extract zip file using multiple methods: $_"
