@@ -207,45 +207,64 @@ steps:
 #       Copy-Item -Path "$(publishDir)\*" -Destination $destination -Recurse -Force
 
 #       Write-Host "Deployment completed."
+
 - task: PowerShell@2
-  displayName: 'Create IIS Website & App Pool (AutoAppDemo)'
+  displayName: 'Deploy AutoAppDemo under Default Web Site'
   inputs:
     targetType: 'inline'
     script: |
-      $siteName = "AutoAppDemo"
-      $appPoolName = "$siteName-pool"
-      $physicalPath = "C:\inetpub\wwwroot\$siteName"
-      $port = 80
+      $siteName = "Default Web Site"
+      $appName = "AutoAppDemo"
+      $appPath = "C:\inetpub\wwwroot\$appName"
+      $appPool = "$appName-pool"
 
       Write-Host "Importing WebAdministration Module..."
       Import-Module WebAdministration
 
       try {
-          Write-Host "Checking or creating site folder..."
-          if (-Not (Test-Path $physicalPath)) {
-              New-Item -Path $physicalPath -ItemType Directory -Force
-              Write-Host "Folder created: $physicalPath"
+          # Create physical folder
+          if (-Not (Test-Path $appPath)) {
+              New-Item -Path $appPath -ItemType Directory -Force
+              Write-Host "Created folder: $appPath"
           } else {
-              Write-Host "Folder already exists: $physicalPath"
+              Write-Host "Folder already exists: $appPath"
           }
 
-          Write-Host "Checking or creating app pool..."
-          if (-Not (Test-Path "IIS:\AppPools\$appPoolName")) {
-              New-WebAppPool -Name $appPoolName
-              Write-Host "App pool created: $appPoolName"
+          # Create App Pool
+          if (-Not (Test-Path "IIS:\AppPools\$appPool")) {
+              New-WebAppPool -Name $appPool
+              Write-Host "Created App Pool: $appPool"
           } else {
-              Write-Host "App pool already exists: $appPoolName"
+              Write-Host "App Pool already exists: $appPool"
           }
 
-          Write-Host "Checking or creating IIS site..."
-          if (-Not (Test-Path "IIS:\Sites\$siteName")) {
-              New-Website -Name $siteName -Port $port -PhysicalPath $physicalPath -ApplicationPool $appPoolName
-              Write-Host "IIS website created: $siteName (Port $port)"
+          # Create application under Default Web Site
+          $fullAppPath = "IIS:\Sites\$siteName\$appName"
+          if (-Not (Test-Path $fullAppPath)) {
+              New-WebApplication -Site $siteName -Name $appName -PhysicalPath $appPath -ApplicationPool $appPool
+              Write-Host "Created IIS App at http://localhost/$appName"
           } else {
-              Write-Host "IIS website already exists: $siteName"
+              Write-Host "IIS App already exists: $appName"
           }
 
       } catch {
-          Write-Error "Deployment failed with error: $_"
+          Write-Error "Deployment script failed: $_"
           exit 1
       }
+- task: PowerShell@2
+  displayName: 'Copy published files to IIS folder'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $source = "$(publishDir)"
+      $destination = "C:\inetpub\wwwroot\AutoAppDemo"
+
+      Write-Host "Copying files from $source to $destination..."
+
+      if (Test-Path $destination) {
+          Remove-Item "$destination\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "Cleaned existing content in $destination"
+      }
+
+      Copy-Item -Path "$source\*" -Destination $destination -Recurse -Force
+      Write-Host "Copied published files successfully!"
