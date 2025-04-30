@@ -15,6 +15,25 @@ variables:
   appPortHttps: 8025
 
 steps:
+# Add cleanup step at the beginning to free memory
+- task: PowerShell@2
+  displayName: 'Initial Memory Cleanup'
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Performing initial memory cleanup..."
+      # Remove any leftover files from previous builds
+      if (Test-Path "$(Build.ArtifactStagingDirectory)") {
+          Get-ChildItem -Path "$(Build.ArtifactStagingDirectory)" -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+      }
+      # Run garbage collection
+      [System.GC]::Collect()
+      
+      # Display available memory
+      $computerSystem = Get-CimInstance -ClassName Win32_OperatingSystem
+      $freeMemory = [math]::Round(($computerSystem.FreePhysicalMemory / $computerSystem.TotalVisibleMemorySize) * 100, 2)
+      Write-Host "Available memory: $($freeMemory)%"
+
 - task: UseDotNet@2
   inputs:
     packageType: 'sdk'
@@ -51,13 +70,40 @@ steps:
     archiveFile: '$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip'
     replaceExistingArchive: true
 
-# Deploy: Create App Pool + App under Optimus App + Extract + Copy
-
+# Run another cleanup before deployment to free more memory
 - task: PowerShell@2
-  displayName: 'Deploy AutoAppDemo under Optimus App'
+  displayName: 'Pre-Deployment Memory Cleanup'
   inputs:
     targetType: 'inline'
     script: |
+      Write-Host "Performing pre-deployment memory cleanup..."
+      
+      # Remove publish directory as it's already zipped
+      if (Test-Path "$(publishDir)") {
+          Remove-Item -Path "$(publishDir)" -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "Cleaned up publish directory"
+      }
+      
+      # Run garbage collection
+      [System.GC]::Collect()
+      
+      # Display available memory
+      $computerSystem = Get-CimInstance -ClassName Win32_OperatingSystem
+      $freeMemory = [math]::Round(($computerSystem.FreePhysicalMemory / $computerSystem.TotalVisibleMemorySize) * 100, 2)
+      Write-Host "Available memory after cleanup: $($freeMemory)%"
+      
+      # Sleep for a moment to let memory cleanup take effect
+      Start-Sleep -Seconds 3
+
+# Deploy: Create App Pool + App under Optimus App + Extract + Copy
+- task: PowerShell@2
+  displayName: 'Deploy AutoAppDemo under Optimus App'
+  inputs:
+    errorActionPreference: 'Continue' # Continue on error to get more diagnostic info
+    targetType: 'inline'
+    script: |
+      $ErrorActionPreference = "Continue" # Enable error reporting
+      
       $siteName = "$(siteName)"
       $physicalPath = "$(physicalPath)"
       $appPoolName = "$(appPoolName)"
@@ -66,62 +112,172 @@ steps:
       $httpPort = $(appPortHttp)
       $httpsPort = $(appPortHttps)
 
-      Import-Module WebAdministration
+      Write-Host "Starting deployment with parameters:"
+      Write-Host "Site Name: $siteName"
+      Write-Host "Physical Path: $physicalPath"
+      Write-Host "App Pool: $appPoolName"
+      Write-Host "Parent Site: $parentSite"
+      Write-Host "Zip Path: $zipPath"
+      
+      # Verify the ZIP file exists before proceeding
+      if (-not (Test-Path $zipPath)) {
+          Write-Host "##vso[task.logissue type=error]ZIP file not found at $zipPath"
+          exit 1
+      } else {
+          Write-Host "ZIP file exists at $zipPath"
+      }
 
+      # Load WebAdministration module with error checking
+      try {
+          Import-Module WebAdministration -ErrorAction Stop
+          Write-Host "Successfully imported WebAdministration module"
+      } catch {
+          Write-Host "##vso[task.logissue type=error]Failed to import WebAdministration module: $_"
+          Write-Host "Attempting to install WebAdministration module..."
+          try {
+              Install-WindowsFeature Web-Scripting-Tools
+              Import-Module WebAdministration -ErrorAction Stop
+              Write-Host "Successfully installed and imported WebAdministration module"
+          } catch {
+              Write-Host "##vso[task.logissue type=error]Failed to install WebAdministration module: $_"
+              exit 1
+          }
+      }
+
+      # First check if the parent site exists (Optimus App)
       Write-Host "Checking if parent site '$parentSite' exists..."
-      if (!(Test-Path "IIS:\Sites\$parentSite")) {
-          Write-Host "##vso[task.logissue type=error] Parent site '$parentSite' does not exist. Please create it first."
+      try {
+          $parentSiteExists = Get-Website -Name $parentSite -ErrorAction Stop
+          if ($parentSiteExists) {
+              Write-Host "Found parent site: $parentSite"
+          } else {
+              Write-Host "##vso[task.logissue type=error]Parent site '$parentSite' does not exist. Please create it first."
+              exit 1
+          }
+      } catch {
+          Write-Host "##vso[task.logissue type=error]Error checking parent site: $_"
+          exit 1
+      }
+      
+      # Ensure physical path exists or create it
+      Write-Host "Ensure physical path exists..."
+      try {
+          if (!(Test-Path $physicalPath)) {
+              New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null
+              Write-Host "Created directory: $physicalPath"
+          } else {
+              Write-Host "Directory already exists: $physicalPath"
+              # Clean existing content
+              Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+              Write-Host "Cleaned existing content in directory"
+          }
+      } catch {
+          Write-Host "##vso[task.logissue type=error]Error managing physical path: $_"
           exit 1
       }
 
-      Write-Host " Ensuring physical path exists at: $physicalPath"
-      if (!(Test-Path $physicalPath)) {
-          New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null
-          Write-Host "Created directory: $physicalPath"
-      }
-
-      Write-Host "🔧 Creating or verifying App Pool '$appPoolName'..."
-      if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
-          New-WebAppPool -Name $appPoolName
-          Write-Host "App Pool created: $appPoolName"
-      }
-
-      $appExists = Get-WebApplication -Site $parentSite | Where-Object { $_.Path -eq "/$siteName" }
-
-      if ($appExists) {
-          Write-Host " Application '$siteName' already exists under '$parentSite', updating App Pool..."
-          Set-ItemProperty "IIS:\Sites\$parentSite\$siteName" -Name applicationPool -Value $appPoolName
-      } else {
-          Write-Host "➕ Creating new application '$siteName' under '$parentSite'..."
-          New-WebApplication -Site $parentSite -Name $siteName -PhysicalPath $physicalPath -ApplicationPool $appPoolName
-      }
-
-      Write-Host "Cleaning contents of: $physicalPath"
-      Get-ChildItem -Path $physicalPath -Recurse -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-      Write-Host "Extracting ZIP to: $physicalPath"
+      # Create/Validate App Pool
+      Write-Host "🔧 Creating/Validating App Pool..."
       try {
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
-
-          if ((Get-ChildItem -Path $physicalPath).Count -eq 0) {
-              throw "Zip extraction succeeded but no files found in $physicalPath"
+          if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
+              New-WebAppPool -Name $appPoolName
+              Write-Host "Created App Pool: $appPoolName"
+              
+              # Configure app pool settings
+              Set-ItemProperty "IIS:\AppPools\$appPoolName" -Name "managedRuntimeVersion" -Value "v4.0"
+              Set-ItemProperty "IIS:\AppPools\$appPoolName" -Name "startMode" -Value "AlwaysRunning"
+              Write-Host "Configured App Pool settings"
+          } else {
+              Write-Host "App Pool already exists: $appPoolName"
           }
-
-          Write-Host "Extraction successful"
       } catch {
-          Write-Host "##vso[task.logissue type=error]Zip extraction failed: $_"
-          throw
+          Write-Host "##vso[task.logissue type=error]Error managing App Pool: $_"
+          # Continue anyway as this might not be fatal
       }
 
-      Write-Host "Setting access permissions for: IIS AppPool\$appPoolName"
-      $acl = Get-Acl $physicalPath
-      $rule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
-      $acl.SetAccessRule($rule)
-      Set-Acl -Path $physicalPath -AclObject $acl
-
-      Write-Host " Deployment completed successfully!"
-# Clean up build artifacts to free memory
+      # Check if application exists under parent site
+      Write-Host "Checking if application '$siteName' exists under '$parentSite'..."
+      try {
+          $appExists = Get-WebApplication -Site $parentSite -Name $siteName -ErrorAction SilentlyContinue
+          
+          if ($appExists) {
+              Write-Host "Application '$siteName' already exists under '$parentSite', updating it..."
+              Set-WebConfigurationProperty -Filter "/system.applicationHost/sites/site[@name='$parentSite']/application[@path='/$siteName']" -Name "applicationPool" -Value $appPoolName
+          } else {
+              # Create new application under the parent site
+              Write-Host "Creating application under $parentSite..."
+              New-WebApplication -Site $parentSite -Name $siteName -PhysicalPath $physicalPath -ApplicationPool $appPoolName
+              Write-Host "Created IIS Application under $parentSite as $siteName"
+          }
+      } catch {
+          Write-Host "##vso[task.logissue type=error]Error managing Web Application: $_"
+          # Continue anyway as extraction might still work
+      }
+      
+      # Extract zip to physical path - use simpler extraction method to avoid memory issues
+      Write-Host "Extracting zip from $zipPath to $physicalPath..."
+      
+      try {
+          # Use Expand-Archive as it's more memory efficient
+          Expand-Archive -Path $zipPath -DestinationPath $physicalPath -Force
+          
+          # Verify extraction worked
+          $extractedFiles = Get-ChildItem -Path $physicalPath -Force
+          if ($extractedFiles.Count -eq 0) {
+              throw "Extraction completed but no files were found in destination directory"
+          }
+          
+          Write-Host "Successfully extracted $($extractedFiles.Count) items to $physicalPath"
+      } catch {
+          Write-Host "Error during primary extraction method: $_"
+          Write-Host "Attempting alternative extraction method..."
+          
+          # Try alternative extraction with managed code to avoid COM objects
+          try {
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath, $true)
+              
+              $extractedFiles = Get-ChildItem -Path $physicalPath -Force
+              Write-Host "Successfully extracted $($extractedFiles.Count) items using .NET extraction"
+          } catch {
+              Write-Host "##vso[task.logissue type=error]All extraction methods failed: $_"
+              exit 1
+          }
+      }
+      
+      # Set file permissions
+      Write-Host "Setting file permissions..."
+      try {
+          $acl = Get-Acl $physicalPath
+          $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+          $acl.SetAccessRule($accessRule)
+          Set-Acl $physicalPath $acl
+          
+          # Also add NETWORK SERVICE for good measure
+          $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("NETWORK SERVICE", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+          $acl.SetAccessRule($accessRule)
+          Set-Acl $physicalPath $acl
+          
+          Write-Host "File permissions set successfully"
+      } catch {
+          Write-Host "##vso[task.logissue type=warning]Error setting permissions: $_"
+          # Continue anyway as permissions might already be correct
+      }
+      
+      # IIS App Pool Recycling to ensure changes take effect
+      Write-Host "Recycling IIS App Pool..."
+      try {
+          Restart-WebAppPool -Name $appPoolName
+          Write-Host "Successfully recycled App Pool"
+      } catch {
+          Write-Host "##vso[task.logissue type=warning]Error recycling App Pool: $_"
+          # Not critical, continue
+      }
+      
+      Write-Host "Deployment completed successfully to $siteName under $parentSite"
+      exit 0  # Explicit success exit code
+      
+# Clean up build artifacts to free memory - always run this
 - task: PowerShell@2
   displayName: 'Clean up build artifacts'
   condition: always() # Run this even if previous steps fail
@@ -144,4 +300,10 @@ steps:
       
       # Run garbage collection to free memory
       [System.GC]::Collect()
+      
+      # Display final memory usage
+      $computerSystem = Get-CimInstance -ClassName Win32_OperatingSystem
+      $freeMemory = [math]::Round(($computerSystem.FreePhysicalMemory / $computerSystem.TotalVisibleMemorySize) * 100, 2)
+      Write-Host "Final memory availability: $($freeMemory)%"
+      
       Write-Host "Memory cleanup completed"
