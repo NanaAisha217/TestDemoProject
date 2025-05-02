@@ -131,13 +131,15 @@ steps:
           
           Write-Host "Extracting zip file..."
           
-          # Handle different .NET versions - newer versions support the overwrite parameter
-          # while older versions don't
-          if ([System.IO.Compression.ZipFile].GetMethod("ExtractToDirectory").GetParameters().Length -eq 3) {
-              # For newer .NET versions that support overwrite parameter
+          # Use a simpler approach to extract the ZIP file
+          try {
+              # Try the newer method with overwrite parameter first
               [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath, $true)
-          } else {
-              # For older .NET versions that don't support overwrite parameter
+          } catch {
+              # If that fails, use the older method (ensure directory is empty first)
+              if (Test-Path -Path $physicalPath) {
+                  Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+              }
               [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
           }
           
