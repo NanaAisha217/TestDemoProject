@@ -84,7 +84,7 @@ steps:
           Write-Host "Directory already exists: $physicalPath"
       }
 
-      Write-Host "🔧 Creating/Validating App Pool..."
+      Write-Host "Creating/Validating App Pool..."
       if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
           New-WebAppPool -Name $appPoolName
           Write-Host "Created App Pool: $appPoolName"
@@ -120,21 +120,41 @@ steps:
       
       try {
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
-          Write-Host "✅ Successfully extracted files to $physicalPath"
+          
+          # Unblock zip file if blocked 
+          Unblock-File -Path $zipPath
+          
+          # Clean old content again just in case
+          if (Test-Path -Path $physicalPath) {
+              Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          
+          Write-Host "Extracting zip file..."
+          
+          # Handle different .NET versions - newer versions support the overwrite parameter
+          # while older versions don't
+          if ([System.IO.Compression.ZipFile].GetMethod("ExtractToDirectory").GetParameters().Length -eq 3) {
+              # For newer .NET versions that support overwrite parameter
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath, $true)
+          } else {
+              # For older .NET versions that don't support overwrite parameter
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
+          }
+          
+          Write-Host "Successfully extracted files to $physicalPath"
+
+          Write-Host "Setting file permissions..."
+          $acl = Get-Acl $physicalPath
+          $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+          $acl.SetAccessRule($accessRule)
+          Set-Acl $physicalPath $acl
+          
+          Write-Host "Deployment completed successfully to $siteName under $parentSite"
       } catch {
-          Write-Host "##vso[task.logissue type=error]Failed to extract zip file: $_"
-          throw "Failed to extract zip file: $_"
+          Write-Host "##vso[task.logissue type=error]Failed to extract zip file or set permissions: $_"
+          throw
       }
-      
-      Write-Host "Setting file permissions..."
-      $acl = Get-Acl $physicalPath
-      $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
-      $acl.SetAccessRule($accessRule)
-      Set-Acl $physicalPath $acl
-      
-      Write-Host "Deployment completed successfully to $siteName under $parentSite"
-      
+
 # Clean up build artifacts to free memory
 - task: PowerShell@2
   displayName: 'Clean up build artifacts'
