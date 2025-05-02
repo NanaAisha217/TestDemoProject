@@ -7,9 +7,9 @@ pool:
 variables:
   buildConfiguration: 'Release'
   publishDir: '$(Build.ArtifactStagingDirectory)/publish'
-  siteName: 'AutoAppDemo'
-  physicalPath: 'C:\inetpub\wwwroot\AutoAppDemo'
-  appPoolName: 'AutoAppDemo-pool'
+  siteName: 'SampleApp'
+  physicalPath: 'C:\inetpub\wwwroot\SampleApp'
+  appPoolName: 'SampleApp-pool'
   parentSiteName: 'Optimus Apps'
 
 steps:
@@ -87,7 +87,7 @@ steps:
           Write-Host "App pool exists: $appPoolName"
       }
       
-      # Prepare target directory
+      #   target directory
       Write-Host "===== DIRECTORY PREPARATION ====="
       if (!(Test-Path $physicalPath)) {
           Write-Host "Creating directory: $physicalPath"
