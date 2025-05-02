@@ -1,192 +1,5 @@
-# trigger:
-# - main  
-
-# pool:
-#   name: Default  # Self-hosted agent pool
-
-# variables:
-#   buildConfiguration: 'Release'
-#   publishDir: '$(Build.ArtifactStagingDirectory)/publish'
-#   siteName: 'AutoAppDemo'
-#   physicalPath: 'C:\inetpub\wwwroot\AutoAppDemo'
-#   appPoolName: 'AutoAppDemo-pool'
-#   parentSiteName: 'Optimus Apps'
-#   appPortHttp: 8026
-#   appPortHttps: 8025
-
-# steps:
-# - task: UseDotNet@2
-#   inputs:
-#     packageType: 'sdk'
-#     version: '8.0.x'
-#     installationPath: $(Agent.ToolsDirectory)/dotnet
-
-# - task: DotNetCoreCLI@2
-#   displayName: 'Restore NuGet packages'
-#   inputs:
-#     command: 'restore'
-#     projects: '**/*.csproj'
-
-# - task: DotNetCoreCLI@2
-#   displayName: 'Build the project'
-#   inputs:
-#     command: 'build'
-#     arguments: '--configuration $(buildConfiguration)'
-#     projects: '**/*.csproj'
-
-# - task: DotNetCoreCLI@2
-#   displayName: 'Publish the app'
-#   inputs:
-#     command: 'publish'
-#     publishWebProjects: true
-#     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
-
-# # ZIP the published output
-# - task: ArchiveFiles@2
-#   displayName: 'Zip Published Output'
-#   inputs:
-#     rootFolderOrFile: '$(publishDir)'
-#     includeRootFolder: false
-#     archiveType: 'zip'
-#     archiveFile: '$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip'
-#     replaceExistingArchive: true
-
-# # Deploy: Create App Pool + App under Optimus App + Extract + Copy
-# - task: PowerShell@2
-#   displayName: 'Deploy AutoAppDemo under Optimus App'
-#   inputs:
-#     targetType: 'inline'
-#     script: |
-#       $siteName = "$(siteName)"
-#       $physicalPath = "$(physicalPath)"
-#       $appPoolName = "$(appPoolName)"
-#       $parentSite = "$(parentSiteName)"
-#       $zipPath = "$(Build.ArtifactStagingDirectory)\AutoAppDemo.zip"
-#       $httpPort = $(appPortHttp)
-#       $httpsPort = $(appPortHttps)
-
-#       Import-Module WebAdministration
-
-#       # First check if the parent site exists (Optimus App)
-#       Write-Host "Checking if parent site '$parentSite' exists..."
-#       if (!(Test-Path "IIS:\Sites\$parentSite")) {
-#           Write-Host "##vso[task.logissue type=error]Parent site '$parentSite' does not exist. Please create it first."
-#           exit 1
-#       } else {
-#           Write-Host "Found parent site: $parentSite"
-#       }
-      
-#       Write-Host "Ensure physical path exists..."
-#       if (!(Test-Path $physicalPath)) {
-#           New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null
-#           Write-Host "Created directory: $physicalPath"
-#       } else {
-#           Write-Host "Directory already exists: $physicalPath"
-#       }
-
-#       Write-Host "🔧 Creating/Validating App Pool..."
-#       if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
-#           New-WebAppPool -Name $appPoolName
-#           Write-Host "Created App Pool: $appPoolName"
-#       } else {
-#           Write-Host "App Pool already exists: $appPoolName"
-#       }
-
-#       # Check if application exists under parent site
-#       Write-Host "Checking if application '$siteName' exists under '$parentSite'..."
-#       $appFullPath = "IIS:\Sites\$parentSite\$siteName"
-      
-#       if (Test-Path $appFullPath) {
-#           Write-Host "Application '$siteName' already exists under '$parentSite', updating it..."
-#           Set-WebConfigurationProperty -Filter "/system.applicationHost/sites/site[@name='$parentSite']/application[@path='/$siteName']" -Name "applicationPool" -Value $appPoolName
-#       } else {
-#           # Create new application under the parent site
-#           Write-Host "Creating application under $parentSite..."
-#           New-WebApplication -Site $parentSite -Name $siteName -PhysicalPath $physicalPath -ApplicationPool $appPoolName
-#           Write-Host "Created IIS Application under $parentSite as $siteName"
-#       }
-      
-#       # Clean old content in target directory and ensure it exists
-#       Write-Host "Cleaning and preparing target directory: $physicalPath"
-#       if (Test-Path -Path $physicalPath) {
-#           Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-#       } else {
-#           New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null
-#       }
-      
-#       # Extract zip to physical path
-#       Write-Host "Extracting zip from $zipPath to $physicalPath..."
-      
-#       try {
-#           # Force using .NET extraction to properly extract all files
-#           Add-Type -AssemblyName System.IO.Compression.FileSystem
-#           # Remove previous extraction if it exists
-#           if (Test-Path $physicalPath) {
-#               Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-#           }
-          
-#           # Extract files from zip to destination
-#           [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
-          
-#           # Verify extraction worked - check if files were extracted
-#           $extractedFiles = Get-ChildItem -Path $physicalPath -Force
-#           if ($extractedFiles.Count -eq 0) {
-#               throw "Extraction completed but no files were found in destination directory"
-#           }
-          
-#           Write-Host "Successfully extracted $($extractedFiles.Count) items to $physicalPath"
-#       } catch {
-#           Write-Host "##vso[task.logissue type=error]Failed to extract zip file: $_"
-#           Write-Host "Attempting alternative extraction method..."
-          
-#           # Try alternative extraction method
-#           try {
-#               $shell = New-Object -ComObject Shell.Application
-#               $zip = $shell.NameSpace($zipPath)
-#               $destination = $shell.NameSpace((Get-Item $physicalPath).Parent.FullName)
-#               $destination.CopyHere($zip.Items(), 16) # 16 = Respond with "Yes to All" on any dialog
-#               Write-Host "Successfully extracted files using Shell.Application method"
-#           } catch {
-#               Write-Host "##vso[task.logissue type=error]Both extraction methods failed. Error: $_" 
-#               throw "Failed to extract zip file using multiple methods: $_"
-#           }
-#       }
-      
-#       Write-Host "Setting file permissions..."
-#       $acl = Get-Acl $physicalPath
-#       $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
-#       $acl.SetAccessRule($accessRule)
-#       Set-Acl $physicalPath $acl
-      
-#       Write-Host "Deployment completed successfully to $siteName under $parentSite"
-      
-# # Clean up build artifacts to free memory
-# - task: PowerShell@2
-#   displayName: 'Clean up build artifacts'
-#   condition: always() # Run this even if previous steps fail
-#   inputs:
-#     targetType: 'inline'
-#     script: |
-#       Write-Host "Cleaning up build artifacts to free memory..."
-      
-#       # Clean publish directory
-#       if (Test-Path "$(publishDir)") {
-#           Remove-Item -Path "$(publishDir)" -Recurse -Force -ErrorAction SilentlyContinue
-#           Write-Host "Cleaned up publish directory"
-#       }
-      
-#       # Clean ZIP file
-#       if (Test-Path "$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip") {
-#           Remove-Item -Path "$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip" -Force -ErrorAction SilentlyContinue
-#           Write-Host "Cleaned up ZIP file"
-#       }
-      
-#       # Run garbage collection to free memory
-#       [System.GC]::Collect()
-#       Write-Host "Memory cleanup completed"
-
 trigger:
-    - main  
+- main  
 
 pool:
   name: Default  # Self-hosted agent pool
@@ -239,7 +52,6 @@ steps:
     replaceExistingArchive: true
 
 # Deploy: Create App Pool + App under Optimus App + Extract + Copy
-
 - task: PowerShell@2
   displayName: 'Deploy AutoAppDemo under Optimus App'
   inputs:
@@ -255,14 +67,16 @@ steps:
 
       Import-Module WebAdministration
 
-      # Check if parent site exists
+      # First check if the parent site exists (Optimus App)
       Write-Host "Checking if parent site '$parentSite' exists..."
       if (!(Test-Path "IIS:\Sites\$parentSite")) {
           Write-Host "##vso[task.logissue type=error]Parent site '$parentSite' does not exist. Please create it first."
           exit 1
+      } else {
+          Write-Host "Found parent site: $parentSite"
       }
-
-      # Ensure physical directory exists
+      
+      Write-Host "Ensure physical path exists..."
       if (!(Test-Path $physicalPath)) {
           New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null
           Write-Host "Created directory: $physicalPath"
@@ -270,7 +84,7 @@ steps:
           Write-Host "Directory already exists: $physicalPath"
       }
 
-      # Create or validate app pool
+      Write-Host "🔧 Creating/Validating App Pool..."
       if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
           New-WebAppPool -Name $appPoolName
           Write-Host "Created App Pool: $appPoolName"
@@ -278,48 +92,49 @@ steps:
           Write-Host "App Pool already exists: $appPoolName"
       }
 
-      # Create or update application under parent site
-      $appPath = "IIS:\Sites\$parentSite\$siteName"
-      if (Test-Path $appPath) {
-          Write-Host "Application '$siteName' already exists. Updating App Pool..."
+      # Check if application exists under parent site
+      Write-Host "Checking if application '$siteName' exists under '$parentSite'..."
+      $appFullPath = "IIS:\Sites\$parentSite\$siteName"
+      
+      if (Test-Path $appFullPath) {
+          Write-Host "Application '$siteName' already exists under '$parentSite', updating it..."
           Set-WebConfigurationProperty -Filter "/system.applicationHost/sites/site[@name='$parentSite']/application[@path='/$siteName']" -Name "applicationPool" -Value $appPoolName
       } else {
-          Write-Host "Creating application '$siteName' under '$parentSite'..."
+          # Create new application under the parent site
+          Write-Host "Creating application under $parentSite..."
           New-WebApplication -Site $parentSite -Name $siteName -PhysicalPath $physicalPath -ApplicationPool $appPoolName
+          Write-Host "Created IIS Application under $parentSite as $siteName"
       }
-
-      # Try extracting ZIP
+      
+      # Clean old content in target directory
+      Write-Host "Cleaning old content in $physicalPath..."
+      Get-ChildItem -Path $physicalPath -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+      
+      # Extract zip to physical path
+      Write-Host "Extracting zip from $zipPath to $physicalPath..."
+      
+      # Ensure the directory is empty first
+      if (Test-Path -Path $physicalPath) {
+          Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+      }
+      
       try {
-          Write-Host "Preparing deployment folder..."
-
-          # Clean old files
-          if (Test-Path $physicalPath) {
-              Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-              Write-Host "Cleaned previous files in $physicalPath"
-          }
-
-          # Unblock zip (in case downloaded from web)
-          Unblock-File -Path $zipPath
-
-          # Extract new files
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath, $true)
-
-          Write-Host "Successfully extracted files to $physicalPath"
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
+          Write-Host "✅ Successfully extracted files to $physicalPath"
       } catch {
-          Write-Host "##vso[task.logissue type=error]Failed to extract zip file: $($_.Exception.Message)"
-          throw
+          Write-Host "##vso[task.logissue type=error]Failed to extract zip file: $_"
+          throw "Failed to extract zip file: $_"
       }
-
-      # Set permissions for the App Pool identity
+      
       Write-Host "Setting file permissions..."
       $acl = Get-Acl $physicalPath
-      $rule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
-      $acl.SetAccessRule($rule)
+      $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+      $acl.SetAccessRule($accessRule)
       Set-Acl $physicalPath $acl
-
+      
       Write-Host "Deployment completed successfully to $siteName under $parentSite"
-
+      
 # Clean up build artifacts to free memory
 - task: PowerShell@2
   displayName: 'Clean up build artifacts'
