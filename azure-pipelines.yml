@@ -41,17 +41,7 @@ steps:
     publishWebProjects: true
     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
 
-# ZIP the published output
-- task: ArchiveFiles@2
-  displayName: 'Zip Published Output'
-  inputs:
-    rootFolderOrFile: '$(publishDir)'
-    includeRootFolder: false
-    archiveType: 'zip'
-    archiveFile: '$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip'
-    replaceExistingArchive: true
-
-# Deploy: Create App Pool + App under Optimus App + Extract + Copy
+# Deploy: Create App Pool + App under Optimus App + Direct Copy
 - task: PowerShell@2
   displayName: 'Deploy AutoAppDemo under Optimus App'
   inputs:
@@ -61,7 +51,7 @@ steps:
       $physicalPath = "$(physicalPath)"
       $appPoolName = "$(appPoolName)"
       $parentSite = "$(parentSiteName)"
-      $zipPath = "$(Build.ArtifactStagingDirectory)\AutoAppDemo.zip"
+      $sourcePath = "$(publishDir)"
       $httpPort = $(appPortHttp)
       $httpsPort = $(appPortHttps)
 
@@ -106,45 +96,17 @@ steps:
           Write-Host "Created IIS Application under $parentSite as $siteName"
       }
       
-      # Clean old content in target directory
+      # Clean old content in target directory and copy new files
       Write-Host "Cleaning old content in $physicalPath..."
       Get-ChildItem -Path $physicalPath -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
       
-      # Extract zip to physical path
-      Write-Host "Extracting zip from $zipPath to $physicalPath..."
-      
-      # Ensure the directory is empty first
-      if (Test-Path -Path $physicalPath) {
-          Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-      }
-      
+      # Copy published files directly to the target location
+      Write-Host "Copying published files from $sourcePath to $physicalPath..."
       try {
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          Copy-Item -Path "$sourcePath\*" -Destination $physicalPath -Recurse -Force
           
-          # Unblock zip file if blocked 
-          Unblock-File -Path $zipPath
+          Write-Host "Successfully copied files to $physicalPath"
           
-          # Clean old content again just in case
-          if (Test-Path -Path $physicalPath) {
-              Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          }
-          
-          Write-Host "Extracting zip file..."
-          
-          # Use a simpler approach to extract the ZIP file
-          try {
-              # Try the newer method with overwrite parameter first
-              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath, $true)
-          } catch {
-              # If that fails, use the older method (ensure directory is empty first)
-              if (Test-Path -Path $physicalPath) {
-                  Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-              }
-              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $physicalPath)
-          }
-          
-          Write-Host "Successfully extracted files to $physicalPath"
-
           Write-Host "Setting file permissions..."
           $acl = Get-Acl $physicalPath
           $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
@@ -153,7 +115,7 @@ steps:
           
           Write-Host "Deployment completed successfully to $siteName under $parentSite"
       } catch {
-          Write-Host "##vso[task.logissue type=error]Failed to extract zip file or set permissions: $_"
+          Write-Host "##vso[task.logissue type=error]Failed to copy files or set permissions: $_"
           throw
       }
 
@@ -170,12 +132,6 @@ steps:
       if (Test-Path "$(publishDir)") {
           Remove-Item -Path "$(publishDir)" -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "Cleaned up publish directory"
-      }
-      
-      # Clean ZIP file
-      if (Test-Path "$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip") {
-          Remove-Item -Path "$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip" -Force -ErrorAction SilentlyContinue
-          Write-Host "Cleaned up ZIP file"
       }
       
       # Run garbage collection to free memory
