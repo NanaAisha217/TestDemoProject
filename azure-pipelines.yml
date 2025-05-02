@@ -11,8 +11,6 @@ variables:
   physicalPath: 'C:\inetpub\wwwroot\AutoAppDemo'
   appPoolName: 'AutoAppDemo-pool'
   parentSiteName: 'Optimus Apps'
-  appPortHttp: 8026
-  appPortHttps: 8025
 
 steps:
 - task: UseDotNet@2
@@ -41,123 +39,142 @@ steps:
     publishWebProjects: true
     arguments: '--configuration $(buildConfiguration) --output $(publishDir)'
 
-# ZIP the published output
-- task: ArchiveFiles@2
-  displayName: 'Zip Published Output'
-  inputs:
-    rootFolderOrFile: '$(publishDir)'
-    includeRootFolder: false
-    archiveType: 'zip'
-    archiveFile: '$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip'
-    replaceExistingArchive: true
-
-# Deploy: Create App Pool + App under Optimus App + Extract + Copy
+# Diagnostic step to examine the publish directory
 - task: PowerShell@2
-  displayName: 'Deploy AutoAppDemo under Optimus App'
+  displayName: 'Examine publish directory'
   inputs:
     targetType: 'inline'
     script: |
+      Write-Host "===== EXAMINING PUBLISH DIRECTORY CONTENTS ====="
+      Write-Host "Publish directory: $(publishDir)"
+      
+      if (Test-Path "$(publishDir)") {
+          Get-ChildItem -Path "$(publishDir)" -Recurse | Select-Object FullName | Format-Table -AutoSize
+      } else {
+          Write-Host "Publish directory does not exist!"
+      }
+
+# Direct deployment with verbose logging
+- task: PowerShell@2
+  displayName: 'Deploy with detailed logging'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $ErrorActionPreference = "Continue"
+      $VerbosePreference = "Continue"
+      
       $siteName = "$(siteName)"
       $physicalPath = "$(physicalPath)"
       $appPoolName = "$(appPoolName)"
       $parentSite = "$(parentSiteName)"
-      $zipPath = "$(Build.ArtifactStagingDirectory)\AutoAppDemo.zip"
-      $httpPort = $(appPortHttp)
-      $httpsPort = $(appPortHttps)
-
-      Import-Module WebAdministration
-
-      # First check if the parent site exists (Optimus App)
-      Write-Host "Checking if parent site '$parentSite' exists..."
-      if (!(Test-Path "IIS:\Sites\$parentSite")) {
-          Write-Host "##vso[task.logissue type=error]Parent site '$parentSite' does not exist. Please create it first."
-          exit 1
+      $sourcePath = "$(publishDir)"
+      
+      Write-Host "===== STARTING DEPLOYMENT WITH DETAILED LOGGING ====="
+      Write-Host "Site Name: $siteName"
+      Write-Host "Physical Path: $physicalPath"
+      Write-Host "App Pool: $appPoolName"
+      Write-Host "Parent Site: $parentSite"
+      Write-Host "Source Path: $sourcePath"
+      
+      Import-Module WebAdministration -Verbose
+      
+      # Create/check app pool
+      Write-Host "===== APP POOL SETUP ====="
+      if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
+          Write-Host "Creating new app pool: $appPoolName"
+          New-WebAppPool -Name $appPoolName -Verbose
       } else {
-          Write-Host "Found parent site: $parentSite"
+          Write-Host "App pool exists: $appPoolName"
       }
       
-      Write-Host "Ensure physical path exists..."
+      # Prepare target directory
+      Write-Host "===== DIRECTORY PREPARATION ====="
       if (!(Test-Path $physicalPath)) {
-          New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null
-          Write-Host "Created directory: $physicalPath"
+          Write-Host "Creating directory: $physicalPath"
+          New-Item -ItemType Directory -Path $physicalPath -Force -Verbose
       } else {
-          Write-Host "Directory already exists: $physicalPath"
+          Write-Host "Target directory exists. Cleaning it..."
+          Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -Verbose
       }
-
-      Write-Host "Creating/Validating App Pool..."
-      if (!(Test-Path "IIS:\AppPools\$appPoolName")) {
-          New-WebAppPool -Name $appPoolName
-          Write-Host "Created App Pool: $appPoolName"
-      } else {
-          Write-Host "App Pool already exists: $appPoolName"
-      }
-
-      # Check if application exists under parent site
-      Write-Host "Checking if application '$siteName' exists under '$parentSite'..."
+      
+      # Setup IIS application
+      Write-Host "===== IIS APPLICATION SETUP ====="
       $appFullPath = "IIS:\Sites\$parentSite\$siteName"
       
       if (Test-Path $appFullPath) {
-          Write-Host "Application '$siteName' already exists under '$parentSite', updating it..."
-          Set-WebConfigurationProperty -Filter "/system.applicationHost/sites/site[@name='$parentSite']/application[@path='/$siteName']" -Name "applicationPool" -Value $appPoolName
+          Write-Host "Application exists. Updating it..."
+          Set-WebConfigurationProperty -Filter "/system.applicationHost/sites/site[@name='$parentSite']/application[@path='/$siteName']" -Name "applicationPool" -Value $appPoolName -Verbose
       } else {
-          # Create new application under the parent site
-          Write-Host "Creating application under $parentSite..."
-          New-WebApplication -Site $parentSite -Name $siteName -PhysicalPath $physicalPath -ApplicationPool $appPoolName
-          Write-Host "Created IIS Application under $parentSite as $siteName"
+          Write-Host "Creating new application..."
+          New-WebApplication -Site $parentSite -Name $siteName -PhysicalPath $physicalPath -ApplicationPool $appPoolName -Verbose
       }
       
-      # Clean old content in target directory
-      Write-Host "Cleaning old content in $physicalPath..."
-      Get-ChildItem -Path $physicalPath -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+      # Detailed list of source files
+      Write-Host "===== SOURCE FILES ====="
+      Get-ChildItem -Path $sourcePath -Recurse | Select-Object FullName | Format-Table -AutoSize
       
-      # Extract zip to physical path
-      Write-Host "Extracting zip from $zipPath to $physicalPath..."
-      
-      # Ensure the directory is empty first
-      if (Test-Path -Path $physicalPath) {
-          Get-ChildItem -Path $physicalPath -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-      }
-      
+      # Copy files - explicit file copy to see exactly what's happening
+      Write-Host "===== COPYING FILES ====="
       try {
-          # Use Expand-Archive which is more reliable than System.IO.Compression
-          Write-Host "Extracting zip file using Expand-Archive..."
-          Expand-Archive -Path $zipPath -DestinationPath $physicalPath -Force
+          # First try to copy everything from inside the publish directory
+          $sourceItems = Get-ChildItem -Path $sourcePath -Force
           
-          Write-Host "Successfully extracted files to $physicalPath"
+          foreach ($item in $sourceItems) {
+              Write-Host "Copying $($item.FullName) to $physicalPath"
+              if ($item.PSIsContainer) {
+                  # It's a directory
+                  Copy-Item -Path $item.FullName -Destination $physicalPath -Recurse -Force -Verbose
+              } else {
+                  # It's a file
+                  Copy-Item -Path $item.FullName -Destination $physicalPath -Force -Verbose
+              }
+          }
           
-          Write-Host "Setting file permissions..."
+          # Check if files were copied successfully
+          Write-Host "===== VERIFYING DEPLOYMENT ====="
+          $targetItems = Get-ChildItem -Path $physicalPath -Recurse
+          Write-Host "Files in target directory after copying:"
+          $targetItems | Select-Object FullName | Format-Table -AutoSize
+          
+          # Check for any zip files that might indicate something went wrong
+          $zipFiles = $targetItems | Where-Object { $_.Extension -eq ".zip" }
+          if ($zipFiles) {
+              Write-Host "WARNING: Found zip files in target directory:"
+              $zipFiles | Select-Object FullName | Format-Table -AutoSize
+              
+              # Try to extract any zip files found
+              foreach ($zipFile in $zipFiles) {
+                  Write-Host "Attempting to extract $($zipFile.FullName)"
+                  $extractDir = Join-Path -Path $physicalPath -ChildPath "Extracted_$($zipFile.BaseName)"
+                  New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+                  
+                  Write-Host "Extracting to $extractDir"
+                  Expand-Archive -Path $zipFile.FullName -DestinationPath $extractDir -Force -Verbose
+                  
+                  # Move files from extraction directory to main directory
+                  Get-ChildItem -Path $extractDir -Recurse | Move-Item -Destination $physicalPath -Force -Verbose
+                  
+                  # Remove the zip file and extraction directory
+                  Remove-Item -Path $zipFile.FullName -Force -Verbose
+                  Remove-Item -Path $extractDir -Recurse -Force -Verbose
+              }
+          }
+          
+          # Set permissions
           $acl = Get-Acl $physicalPath
           $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("IIS AppPool\$appPoolName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
           $acl.SetAccessRule($accessRule)
-          Set-Acl $physicalPath $acl
+          Set-Acl $physicalPath $acl -Verbose
           
-          Write-Host "Deployment completed successfully to $siteName under $parentSite"
+          Write-Host "Deployment completed successfully"
+          
       } catch {
-          Write-Host "##vso[task.logissue type=error]Failed to extract zip file or set permissions: $_"
+          Write-Host "ERROR: Failed to deploy: $_"
+          Write-Host "Error details:"
+          $_ | Format-List -Force
           throw
       }
-
-# Clean up build artifacts to free memory
-- task: PowerShell@2
-  displayName: 'Clean up build artifacts'
-  condition: always() # Run this even if previous steps fail
-  inputs:
-    targetType: 'inline'
-    script: |
-      Write-Host "Cleaning up build artifacts to free memory..."
       
-      # Clean publish directory
-      if (Test-Path "$(publishDir)") {
-          Remove-Item -Path "$(publishDir)" -Recurse -Force -ErrorAction SilentlyContinue
-          Write-Host "Cleaned up publish directory"
-      }
-      
-      # Clean ZIP file
-      if (Test-Path "$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip") {
-          Remove-Item -Path "$(Build.ArtifactStagingDirectory)/AutoAppDemo.zip" -Force -ErrorAction SilentlyContinue
-          Write-Host "Cleaned up ZIP file"
-      }
-      
-      # Run garbage collection to free memory
-      [System.GC]::Collect()
-      Write-Host "Memory cleanup completed"
+      # Final verification
+      Write-Host "===== FINAL DIRECTORY LISTING ====="
+      Get-ChildItem -Path $physicalPath -Recurse | Select-Object FullName | Format-Table -AutoSize
